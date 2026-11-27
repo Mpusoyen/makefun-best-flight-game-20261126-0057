@@ -44,14 +44,22 @@ function colourFor(h, slope, x, z) {
   else if (h > 330 || slope > 0.55) c.setHex(COLOURS.rock);
   else if (h > 150) c.setHex(COLOURS.grassHigh).lerp(new THREE.Color(COLOURS.rock), (h - 150) / 420);
   else c.setHex(COLOURS.grassLow).lerp(new THREE.Color(COLOURS.grassHigh), h / 220);
+  // Scree band: steep slopes just below the snowline lighten to grey-tan.
+  if (h > 380 && h <= 470 && slope > 0.35) {
+    const screeT = smoothstep(0.35, 0.75, slope) * smoothstep(380, 430, h);
+    c.lerp(new THREE.Color(0xb8ab94), screeT * 0.65);
+  }
   // Patchy meadow variation so the valley floor is not one flat green.
   const v = 0.88 + 0.24 * (fbm(x * 0.004 + 31, z * 0.004 + 17, 3) * 0.5 + 0.5);
   c.multiplyScalar(v);
+  // Second, finer noise octave for close-up texture feel (±8% brightness).
+  const fine = 0.92 + 0.16 * (fbm(x * 0.02 + 53, z * 0.02 + 71, 2) * 0.5 + 0.5);
+  c.multiplyScalar(fine);
   return c;
 }
 
 function buildGround(scene) {
-  const seg = 160;
+  const seg = 220;
   const geo = new THREE.PlaneGeometry(WORLD.size, WORLD.size, seg, seg);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
@@ -73,7 +81,9 @@ function buildGround(scene) {
 }
 
 function buildWater(scene) {
-  const mat = new THREE.MeshLambertMaterial({ color: COLOURS.river, transparent: true, opacity: 0.92 });
+  const mat = new THREE.MeshPhongMaterial({
+    color: COLOURS.river, transparent: true, opacity: 0.92, shininess: 120, specular: 0xbfe3ff,
+  });
   // River ribbon following riverZ.
   const pts = [];
   for (let x = -2100; x <= 2100; x += 100) pts.push(new THREE.Vector3(x, 43.5, riverZ(x)));
@@ -94,7 +104,9 @@ function buildWater(scene) {
   scene.add(new THREE.Mesh(ribbon, mat));
   // Lake disc.
   const lake = new THREE.Mesh(new THREE.CircleGeometry(LAKE.r, 40),
-    new THREE.MeshLambertMaterial({ color: COLOURS.lake, transparent: true, opacity: 0.94 }));
+    new THREE.MeshPhongMaterial({
+      color: COLOURS.lake, transparent: true, opacity: 0.94, shininess: 120, specular: 0xbfe3ff,
+    }));
   lake.rotation.x = -Math.PI / 2;
   lake.position.set(LAKE.x, 51, LAKE.z);
   scene.add(lake);
@@ -121,14 +133,55 @@ function buildForest(scene) {
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, spots.length);
   const cones = new THREE.InstancedMesh(coneGeo, leafMat, spots.length);
   const m = new THREE.Matrix4(); const q = new THREE.Quaternion(); const v = new THREE.Vector3(); const sc = new THREE.Vector3();
+  const coneColour = new THREE.Color();
   spots.forEach((p, i) => {
     q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng.next() * Math.PI * 2);
     sc.setScalar(p.s);
     m.compose(v.set(p.x, p.h + 3 * p.s, p.z), q, sc); trunks.setMatrixAt(i, m);
     m.compose(v.set(p.x, p.h + (6 + 8) * p.s, p.z), q, sc); cones.setMatrixAt(i, m);
+    // Per-instance green variation so the forest is not one flat colour.
+    coneColour.setHex(0x2e5d2a);
+    coneColour.offsetHSL(rng.range(-0.03, 0.03), rng.range(-0.08, 0.08), rng.range(-0.05, 0.07));
+    cones.setColorAt(i, coneColour);
   });
+  if (cones.instanceColor) cones.instanceColor.needsUpdate = true;
   trunks.castShadow = true; cones.castShadow = true;
   scene.add(trunks); scene.add(cones);
+}
+
+function buildRocks(scene) {
+  const rng = makeRng(WORLD.seed + 37);
+  const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+  const rockMat = new THREE.MeshLambertMaterial({ color: 0x8a8378 });
+  const spots = [];
+  let guard = 0;
+  while (spots.length < 120 && guard < 20000) {
+    guard += 1;
+    const x = rng.range(-2000, 2000); const z = rng.range(-2000, 2000);
+    const h = heightAt(x, z);
+    if (h < 200 || h > 520) continue;
+    const slope = Math.abs(heightAt(x + 8, z) - h) / 8 + Math.abs(heightAt(x, z + 8) - h) / 8;
+    if (slope < 0.45) continue;
+    if (Math.abs(z - riverZ(x)) < 90) continue;
+    if (Math.hypot(x - LAKE.x, z - LAKE.z) < LAKE.r + 40) continue;
+    if (STRIPS.some((s) => Math.hypot(x - s.x, z - s.z) < 330)) continue;
+    spots.push({ x, z, h, r: rng.range(1.5, 4) });
+  }
+  const rocks = new THREE.InstancedMesh(rockGeo, rockMat, spots.length);
+  const m = new THREE.Matrix4(); const q = new THREE.Quaternion(); const v = new THREE.Vector3(); const sc = new THREE.Vector3();
+  const rockColour = new THREE.Color();
+  spots.forEach((p, i) => {
+    q.setFromEuler(new THREE.Euler(rng.next() * Math.PI, rng.next() * Math.PI, rng.next() * Math.PI));
+    sc.set(p.r * rng.range(0.8, 1.3), p.r * rng.range(0.6, 1), p.r * rng.range(0.8, 1.3));
+    m.compose(v.set(p.x, p.h + p.r * 0.25, p.z), q, sc);
+    rocks.setMatrixAt(i, m);
+    rockColour.setHex(0x8a8378);
+    rockColour.offsetHSL(0, rng.range(-0.03, 0.03), rng.range(-0.06, 0.06));
+    rocks.setColorAt(i, rockColour);
+  });
+  if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
+  rocks.castShadow = true;
+  scene.add(rocks);
 }
 
 function buildVillage(scene, cx, cz, count, seedOff) {
@@ -203,15 +256,21 @@ function buildStrip(scene, strip, windsocks) {
 
 function buildClouds(scene) {
   const rng = makeRng(WORLD.seed + 23);
-  const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 });
+  const mat = new THREE.MeshLambertMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.95, emissive: 0x555f6a,
+  });
   const clouds = [];
-  for (let i = 0; i < 16; i += 1) {
+  for (let i = 0; i < 26; i += 1) {
     const g = new THREE.Group();
     const puffs = rng.int(3, 5);
     for (let p = 0; p < puffs; p += 1) {
       const s = new THREE.Mesh(new THREE.SphereGeometry(rng.range(18, 34), 10, 8), mat);
-      s.scale.y = 0.45;
-      s.position.set(rng.range(-40, 40), rng.range(-4, 4), rng.range(-18, 18));
+      // Vary puff flattening more; lower puffs keep a bit more volume.
+      const py = rng.range(-4, 4);
+      s.scale.y = py < 0 ? rng.range(0.55, 0.75) : rng.range(0.35, 0.6);
+      s.scale.x = rng.range(0.85, 1.3);
+      s.scale.z = rng.range(0.85, 1.2);
+      s.position.set(rng.range(-40, 40), py, rng.range(-18, 18));
       g.add(s);
     }
     g.position.set(rng.range(-2000, 2000), rng.range(480, 720), rng.range(-2000, 2000));
@@ -255,17 +314,54 @@ export function buildRings(scene, positions) {
   };
 }
 
+function buildSkyDome(scene) {
+  // Gradient sky dome: horizon fog colour up to a deeper zenith blue.
+  const geo = new THREE.SphereGeometry(5200, 24, 16);
+  const pos = geo.attributes.position;
+  const colours = new Float32Array(pos.count * 3);
+  const horizon = new THREE.Color(COLOURS.fog);
+  const zenith = new THREE.Color(0x4a90d9);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < pos.count; i += 1) {
+    const y = pos.getY(i) / 5200;
+    const t = Math.min(1, Math.max(0, y * 1.6 + 0.12));
+    tmp.copy(horizon).lerp(zenith, t * t);
+    colours[i * 3] = tmp.r; colours[i * 3 + 1] = tmp.g; colours[i * 3 + 2] = tmp.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
+  const dome = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    vertexColors: true, fog: false, side: THREE.BackSide,
+  }));
+  scene.add(dome);
+}
+
+function makeSunGlowTexture() {
+  const size = 256;
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  const ctx = cv.getContext('2d');
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, 'rgba(255,244,200,0.85)');
+  grad.addColorStop(0.25, 'rgba(255,230,160,0.45)');
+  grad.addColorStop(0.6, 'rgba(255,210,120,0.14)');
+  grad.addColorStop(1, 'rgba(255,210,120,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(cv);
+}
+
 export function buildWorld(scene) {
   scene.background = new THREE.Color(COLOURS.sky);
   scene.fog = new THREE.Fog(COLOURS.fog, WORLD.fogNear, WORLD.fogFar);
-  const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x5d7a4a, 0.85);
+  buildSkyDome(scene);
+  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x5d7a4a, 0.75);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(COLOURS.sun, 1.35);
-  sun.position.set(900, 1400, 600);
+  const sun = new THREE.DirectionalLight(0xffe3b3, 1.5);
+  sun.position.set(1100, 950, 500);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -260; sun.shadow.camera.right = 260;
-  sun.shadow.camera.top = 260; sun.shadow.camera.bottom = -260;
+  sun.shadow.camera.left = -620; sun.shadow.camera.right = 620;
+  sun.shadow.camera.top = 620; sun.shadow.camera.bottom = -620;
   sun.shadow.camera.far = 4000;
   scene.add(sun);
   // Sun disc in the sky.
@@ -274,10 +370,18 @@ export function buildWorld(scene) {
   disc.position.set(1500, 1150, -2600);
   disc.lookAt(0, 0, 0);
   scene.add(disc);
+  // Soft glow sprite around the sun disc.
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: makeSunGlowTexture(), transparent: true, depthWrite: false, fog: false,
+  }));
+  glow.position.copy(disc.position);
+  glow.scale.setScalar(700);
+  scene.add(glow);
 
   buildGround(scene);
   buildWater(scene);
   buildForest(scene);
+  buildRocks(scene);
   buildVillage(scene, HOME_STRIP.x + 260, HOME_STRIP.z + 320, 16, 31);
   buildVillage(scene, LAKE_STRIP.x - 300, LAKE_STRIP.z + 260, 13, 47);
   const windsocks = [];
